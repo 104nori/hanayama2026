@@ -459,6 +459,7 @@
         <button type="button" class="btn btn-ghost btn-small" id="saveLocalBtn">データを保存(PC)</button>
         <button type="button" class="btn btn-ghost btn-small" id="loadLocalBtn">データを読み込む</button>
         <button type="button" class="btn btn-ghost btn-small" id="exportCsvBtn">CSV書き出し</button>
+        <button type="button" class="btn btn-danger btn-small" id="removeDupBtn">重複をまとめて削除</button>
         <input type="file" id="loadLocalInput" accept="application/json" style="display:none;">
       </div>
     </div>
@@ -1339,7 +1340,22 @@ function renderPosterName(){
 document.getElementById('posterSplitAt').addEventListener('input', renderPosterName);
 document.getElementById('posterNameScale').addEventListener('input', renderPosterName);
 
-function openPoster(idx){
+async function ensurePosterFontsLoaded(){
+  if(!document.fonts) return;
+  try{
+    await Promise.all([
+      document.fonts.load('700 60px "Yuji Boku"'),
+      document.fonts.load('60px "Yuji Boku"'),
+      document.fonts.load('700 60px "Shippori Mincho"')
+    ]);
+    await document.fonts.ready;
+  }catch(e){}
+}
+ensurePosterFontsLoaded(); // ページ読み込み時に先読みしておく
+
+async function openPoster(idx){
+  await ensurePosterFontsLoaded();
+
   currentPosterIdx = idx;
   const e = entries[idx];
   const amountEl = document.getElementById('posterAmount');
@@ -1485,6 +1501,39 @@ document.getElementById('exportCsvBtn').addEventListener('click', () => {
   const now = new Date();
   const fname = `花山集計_${now.getFullYear()}${pad2(now.getMonth()+1)}${pad2(now.getDate())}.csv`;
   downloadBlob(csv, fname, 'text/csv');
+});
+
+document.getElementById('removeDupBtn').addEventListener('click', async () => {
+  const keyOf = e => (e.donor || '').trim() + '|' + String(e.amount);
+  const seen = new Set();
+  const toRemove = [];
+  entries.forEach(e => {
+    const key = keyOf(e);
+    if(seen.has(key)){
+      toRemove.push(e);
+    } else {
+      seen.add(key);
+    }
+  });
+
+  if(toRemove.length === 0){
+    alert('重複しているデータは見つかりませんでした。');
+    return;
+  }
+
+  const preview = toRemove.slice(0, 5).map(e => `・${e.donor}／${e.category === '花山' ? yen(e.amount) : e.amount}`).join('\n');
+  const more = toRemove.length > 5 ? `\n…ほか${toRemove.length - 5}件` : '';
+  const ok = confirm(
+    `同じ名前・同じ金額の重複が${toRemove.length}件見つかりました。\n` +
+    `それぞれ、一番早く入力された1件を残して削除します。\n\n${preview}${more}\n\n削除してよろしいですか？`
+  );
+  if(!ok) return;
+
+  const removeIds = new Set(toRemove.map(e => e.id || e.createdAt));
+  entries = entries.filter(e => !removeIds.has(e.id || e.createdAt));
+  await saveEntries();
+  render();
+  alert(`${toRemove.length}件の重複データを削除しました。`);
 });
 
 loadAll();
