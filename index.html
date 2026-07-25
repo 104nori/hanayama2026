@@ -167,6 +167,8 @@
   }
   tbody td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:middle;}
   tbody tr:hover{background:#fffaf0;}
+  tr.row-duplicate{background:#fff3cd;}
+  tr.row-duplicate:hover{background:#ffe9a8;}
   .tag{
     display:inline-block;
     padding:2px 9px;
@@ -704,6 +706,64 @@ async function driveFindFileId(){
   return (data.files && data.files.length) ? data.files[0].id : null;
 }
 
+function entryKey(e){
+  return e.id || e.createdAt || JSON.stringify(e);
+}
+
+function mergeEntries(remoteList, localList){
+  const map = new Map();
+  (remoteList || []).forEach(e => map.set(entryKey(e), e));
+  (localList || []).forEach(e => map.set(entryKey(e), e)); // ローカル側の内容を優先（新規追加はそのまま、同じIDは編集後の内容で上書き）
+  const merged = Array.from(map.values());
+  merged.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+  return merged;
+}
+
+async function driveUploadData(){
+  const payload = JSON.stringify({
+    savedAt: new Date().toISOString(),
+    dates: {
+      yoi: document.getElementById('dateYoi').value,
+      hon: document.getElementById('dateHon').value
+    },
+    entries: entries
+  }, null, 2);
+
+  if(!driveFileId){
+    driveFileId = await driveFindFileId();
+  }
+
+  if(driveFileId){
+    const res = await fetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer ' + driveAccessToken, 'Content-Type': 'application/json' },
+        body: payload
+      }
+    );
+    if(!res.ok) throw new Error('update failed');
+  } else {
+    const boundary = '-------314159265358979323846';
+    const metadata = { name: DRIVE_FILE_NAME, mimeType: 'application/json' };
+    const multipartBody =
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+      `--${boundary}\r\nContent-Type: application/json\r\n\r\n${payload}\r\n` +
+      `--${boundary}--`;
+    const res = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + driveAccessToken, 'Content-Type': `multipart/related; boundary=${boundary}` },
+        body: multipartBody
+      }
+    );
+    if(!res.ok) throw new Error('create failed');
+    const data = await res.json();
+    driveFileId = data.id;
+  }
+}
+
 async function driveSyncAll(){
   if(!driveConnected) return;
   if(!navigator.onLine){
@@ -717,51 +777,38 @@ async function driveSyncAll(){
   }
   updateDriveStatus('保存中…');
   try{
-    const payload = JSON.stringify({
-      savedAt: new Date().toISOString(),
-      dates: {
-        yoi: document.getElementById('dateYoi').value,
-        hon: document.getElementById('dateHon').value
-      },
-      entries: entries
-    }, null, 2);
-
-    if(!driveFileId){
-      driveFileId = await driveFindFileId();
-    }
-
-    if(driveFileId){
-      const res = await fetch(
-        `https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,
-        {
-          method: 'PATCH',
-          headers: { Authorization: 'Bearer ' + driveAccessToken, 'Content-Type': 'application/json' },
-          body: payload
-        }
-      );
-      if(!res.ok) throw new Error('update failed');
-    } else {
-      const boundary = '-------314159265358979323846';
-      const metadata = { name: DRIVE_FILE_NAME, mimeType: 'application/json' };
-      const multipartBody =
-        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-        `--${boundary}\r\nContent-Type: application/json\r\n\r\n${payload}\r\n` +
-        `--${boundary}--`;
-      const res = await fetch(
-        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-        {
-          method: 'POST',
-          headers: { Authorization: 'Bearer ' + driveAccessToken, 'Content-Type': `multipart/related; boundary=${boundary}` },
-          body: multipartBody
-        }
-      );
-      if(!res.ok) throw new Error('create failed');
-      const data = await res.json();
-      driveFileId = data.id;
-    }
+    await driveUploadData();
     updateDriveStatus('接続済み（同期済み）');
   }catch(e){
     updateDriveStatus('保存に失敗しました（次回オンライン時に再試行します）');
+  }
+}
+
+// オフライン中に入力した内容を、オンライン復帰時にDrive上の最新データと結合してから保存する
+async function driveMergeAndSync(){
+  if(!driveConnected) return;
+  if(!navigator.onLine){
+    updateDriveStatus('オフラインのため保留中');
+    return;
+  }
+  const ok = await ensureDriveToken();
+  if(!ok){
+    updateDriveStatus('再接続が必要です');
+    return;
+  }
+  updateDriveStatus('データを結合中…');
+  try{
+    if(!driveFileId){
+      driveFileId = await driveFindFileId();
+    }
+    const remoteData = driveFileId ? await driveDownloadData() : null;
+    const remoteEntries = (remoteData && Array.isArray(remoteData.entries)) ? remoteData.entries : [];
+    entries = mergeEntries(remoteEntries, entries);
+    render();
+    await driveUploadData();
+    updateDriveStatus('接続済み（結合・同期済み）');
+  }catch(e){
+    updateDriveStatus('結合・保存に失敗しました（次回オンライン時に再試行します）');
   }
 }
 
@@ -769,11 +816,10 @@ document.getElementById('driveConnectBtn').addEventListener('click', connectDriv
 initDriveAuth();
 
 window.addEventListener('online', () => {
-  if(hasUnsavedChanges){
-    saveEntries();
-  }
   if(driveConnected){
-    driveSyncAll();
+    driveMergeAndSync();
+  } else if(hasUnsavedChanges){
+    saveEntries();
   }
 });
 
@@ -859,11 +905,22 @@ function render(){
   } else {
     emptyMsg.style.display = 'none';
   }
+
+  const dupCounts = {};
+  entries.forEach(e => {
+    const key = (e.donor || '').trim() + '|' + String(e.amount);
+    dupCounts[key] = (dupCounts[key] || 0) + 1;
+  });
+
   entries.forEach((e, idx) => {
     const tr = document.createElement('tr');
     const sessionTag = e.session === '宵宮' ? 'tag-yoi' : 'tag-hon';
     const catTag = e.category === '花山' ? 'tag-hanayama' : 'tag-kifu';
     const amountDisplay = e.category === '花山' ? yen(e.amount) : escapeHtml(e.amount || '');
+    const key = (e.donor || '').trim() + '|' + String(e.amount);
+    if(dupCounts[key] > 1){
+      tr.classList.add('row-duplicate');
+    }
     tr.innerHTML = `
       <td>${idx + 1}</td>
       <td><span class="tag ${sessionTag}">${e.session}</span></td>
@@ -954,6 +1011,7 @@ document.getElementById('entryForm').addEventListener('submit', async (ev) => {
   }
 
   const entry = {
+    id: (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(36).slice(2))),
     session, category, inputter, donor,
     amount: category === '花山' ? Number(amountRaw) : amountRaw,
     createdAt: new Date().toISOString()
