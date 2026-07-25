@@ -643,8 +643,16 @@ async function driveInitialSync(){
     driveFileId = await driveFindFileId();
     if(driveFileId){
       const data = await driveDownloadData();
-      if(data){
-        applyDriveData(data);
+      const remoteEntries = (data && Array.isArray(data.entries)) ? data.entries : [];
+      const hadLocalEntries = entries.length > 0;
+      entries = mergeEntries(remoteEntries, entries);
+      if(data && data.dates){
+        if(!document.getElementById('dateYoi').value && data.dates.yoi) document.getElementById('dateYoi').value = data.dates.yoi;
+        if(!document.getElementById('dateHon').value && data.dates.hon) document.getElementById('dateHon').value = data.dates.hon;
+      }
+      render();
+      if(hadLocalEntries){
+        await driveUploadData(); // ローカルにあった分もDrive側に反映しておく
       }
       updateDriveStatus('接続済み（同期済み）');
     } else {
