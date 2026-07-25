@@ -1184,6 +1184,8 @@ function chunkText(text, maxLen){
   return chunks;
 }
 
+const INFIX_MARKERS = ['神社', '八幡宮', '天満宮', '稲荷神社', '保存会', '実行委員会', '町内会', '自治会'];
+
 function splitDonorName(name, manualSplitAt){
   name = name || '';
   const chars = [...name];
@@ -1206,6 +1208,16 @@ function splitDonorName(name, manualSplitAt){
     for(const affix of COMPANY_AFFIXES){
       if(name.endsWith(affix) && name.length > affix.length){
         parts = [name.slice(0, name.length - affix.length), affix];
+        break;
+      }
+    }
+  }
+  if(!parts){
+    // 「〇〇神社△△」のように、語のまとまりの直後で区切れる場合はそこで分ける
+    for(const marker of INFIX_MARKERS){
+      const idx = name.indexOf(marker);
+      if(idx > 0 && idx + marker.length < name.length){
+        parts = [name.slice(0, idx + marker.length), name.slice(idx + marker.length)];
         break;
       }
     }
