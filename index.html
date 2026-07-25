@@ -598,6 +598,21 @@ function initDriveAuth(){
     scope: DRIVE_SCOPE,
     callback: () => {}
   });
+  attemptSilentDriveConnect();
+}
+
+function attemptSilentDriveConnect(){
+  driveTokenClient.callback = async (resp) => {
+    if(resp && resp.access_token){
+      driveAccessToken = resp.access_token;
+      driveTokenExpiry = Date.now() + (resp.expires_in ? resp.expires_in * 1000 : 3300000);
+      driveConnected = true;
+      updateDriveStatus('接続済み');
+      await driveInitialSync();
+    }
+    // 失敗時は何もしない（従来通り「接続」ボタンを押してもらう）
+  };
+  driveTokenClient.requestAccessToken({prompt: ''});
 }
 
 function connectDrive(){
@@ -605,18 +620,57 @@ function connectDrive(){
     alert('Google連携の準備中です。少し待ってからもう一度お試しください。');
     return;
   }
-  driveTokenClient.callback = (resp) => {
+  driveTokenClient.callback = async (resp) => {
     if(resp && resp.access_token){
       driveAccessToken = resp.access_token;
       driveTokenExpiry = Date.now() + (resp.expires_in ? resp.expires_in * 1000 : 3300000);
       driveConnected = true;
       updateDriveStatus('接続済み');
-      driveSyncAll();
+      await driveInitialSync();
     } else {
       updateDriveStatus('接続に失敗しました');
     }
   };
   driveTokenClient.requestAccessToken({prompt: 'consent'});
+}
+
+// 接続直後：Driveに既存データがあれば取り込み、なければ現在の内容で新規作成する
+async function driveInitialSync(){
+  updateDriveStatus('読み込み中…');
+  try{
+    driveFileId = await driveFindFileId();
+    if(driveFileId){
+      const data = await driveDownloadData();
+      if(data){
+        applyDriveData(data);
+      }
+      updateDriveStatus('接続済み（同期済み）');
+    } else {
+      await driveSyncAll();
+    }
+  }catch(e){
+    updateDriveStatus('読み込みに失敗しました');
+  }
+}
+
+async function driveDownloadData(){
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`,
+    { headers: { Authorization: 'Bearer ' + driveAccessToken } }
+  );
+  if(!res.ok) throw new Error('download failed');
+  return await res.json();
+}
+
+function applyDriveData(data){
+  if(data && Array.isArray(data.entries)){
+    entries = data.entries;
+  }
+  if(data && data.dates){
+    if(data.dates.yoi) document.getElementById('dateYoi').value = data.dates.yoi;
+    if(data.dates.hon) document.getElementById('dateHon').value = data.dates.hon;
+  }
+  render();
 }
 
 async function ensureDriveToken(){
